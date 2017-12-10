@@ -36,6 +36,7 @@ import (
 
 	"github.com/cleesmith/go-unified2"
 
+	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/logp"
 )
 
@@ -48,7 +49,7 @@ import (
 // to "archive/rename" the indexed file and timestamp it,
 // which avoids continuously looping over the same data
 // leading to document duplication.
-func (ub *Unifiedbeat) U2SpoolAndPublish() {
+func (ub *Unifiedbeat) U2SpoolAndPublish(client beat.Client, b *beat.Beat) {
 	logp.Info("U2SpoolAndPublish: spooling and publishing...")
 	reader := unified2.NewSpoolRecordReader(ub.UbConfig.Sensor.Spooler.Folder,
 		ub.UbConfig.Sensor.Spooler.FilePrefix)
@@ -132,12 +133,15 @@ func (ub *Unifiedbeat) U2SpoolAndPublish() {
 		event.SetFieldsUnderRoot(ub.UbConfig.Sensor.FieldsUnderRoot)
 
 		eventCommonMapStr := event.ToMapStr() // see "beat/u2recordhandler.go"
-
-		ub.events.PublishEvent(eventCommonMapStr)
+		go client.Publish(beat.Event{
+			Timestamp: time.Now(),
+			Fields:    eventCommonMapStr,
+		})
 
 		// } // end: select default
 
 	} // end: forever index all files in the specifed spool folder
 
 	logp.Info("U2SpoolAndPublish: done.")
+	return
 }

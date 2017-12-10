@@ -36,8 +36,8 @@ import (
 
 	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/cfgfile"
+	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
-	"github.com/elastic/beats/libbeat/publisher"
 )
 
 // The "quit" channel is used to tell
@@ -50,11 +50,10 @@ type Unifiedbeat struct {
 	registrar    *Registrar
 	isSpooling   bool
 	spoolTimeout time.Duration
-	events       publisher.Client
 }
 
-func New() *Unifiedbeat {
-	return &Unifiedbeat{}
+func New(b *beat.Beat, _ *common.Config) (beat.Beater, error) {
+	return &Unifiedbeat{}, nil
 }
 
 func (ub *Unifiedbeat) Config(b *beat.Beat) error {
@@ -128,8 +127,6 @@ func (ub *Unifiedbeat) Setup(b *beat.Beat) error {
 		ub.spoolTimeout = time.Duration(ub.UbConfig.Sensor.SpoolerTimeout) * time.Second
 	}
 
-	ub.events = b.Events
-
 	// registry file is created in the current working directory:
 	ub.registrar, err = NewRegistrar(".unifiedbeat")
 	if err != nil {
@@ -166,7 +163,13 @@ func (ub *Unifiedbeat) Run(b *beat.Beat) error {
 	// quit = make(chan bool)
 
 	ub.isSpooling = true
-	ub.U2SpoolAndPublish()
+	client, err := b.Publisher.Connect()
+	if err != nil {
+		return err
+	}
+
+	ub.U2SpoolAndPublish(client, b)
+
 	// indicate that "U2SpoolAndPublish" returned unexpectedly,
 	// and that it is no longer running, so the "quit" code is ignored:
 	ub.isSpooling = false
@@ -174,10 +177,10 @@ func (ub *Unifiedbeat) Run(b *beat.Beat) error {
 	// do a WriteRegistry as the "quit" channel code may fail,
 	// block, or whatever ... the worst is two writes of the
 	// same info to the registry file:
-	err := ub.registrar.WriteRegistry()
+	err2 := ub.registrar.WriteRegistry()
 	if err != nil {
 		logp.Info("Run: failed to update registry file; error: %v", err)
-		return err // return to "main.go" after Stop() and Cleanup()
+		return err2 // return to "main.go" after Stop() and Cleanup()
 	}
 	logp.Info("Run: updated registry file.")
 

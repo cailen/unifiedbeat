@@ -30,14 +30,22 @@ import (
 	"os"
 
 	unifiedbeat "github.com/cleesmith/unifiedbeat/beat"
-	"github.com/elastic/beats/libbeat/beat"
+	"github.com/elastic/beats/libbeat/cmd"
 )
 
 var Name = "unifiedbeat"
 var Version = "2.0.1"
+var idxPrefix = "unifiedbeat"
+var RootCmd = cmd.GenRootCmd(Name, Version, unifiedbeat.New)
+
+// func main() {
+// 	if err := instance.Run(Name, idxPrefix, Version, unifiedbeat.New()); err != nil {
+// 		os.Exit(1)
+// 	}
+// }
 
 func main() {
-	if err := beat.Run(Name, Version, unifiedbeat.New()); err != nil {
+	if err := RootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
