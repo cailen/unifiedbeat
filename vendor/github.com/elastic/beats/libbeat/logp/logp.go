@@ -5,22 +5,41 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"runtime"
+	"os"
 	"strings"
+	"time"
+
+	"github.com/elastic/beats/libbeat/paths"
 )
 
-// cmd line flags
-var verbose *bool
-var toStderr *bool
-var debugSelectorsStr *string
+var (
+	// cmd line flags
+	verbose           *bool
+	toStderr          *bool
+	debugSelectorsStr *string
+
+	// Beat start time
+	startTime time.Time
+)
 
 type Logging struct {
 	Selectors []string
 	Files     *FileRotator
-	ToSyslog  *bool `yaml:"to_syslog"`
-	ToFiles   *bool `yaml:"to_files"`
+	ToSyslog  *bool `config:"to_syslog"`
+	ToFiles   *bool `config:"to_files"`
+	JSON      bool  `config:"json"`
 	Level     string
+	Metrics   LoggingMetricsConfig `config:"metrics"`
 }
+
+type LoggingMetricsConfig struct {
+	Enabled *bool          `config:"enabled"`
+	Period  *time.Duration `config:"period" validate:"nonzero,min=0s"`
+}
+
+var (
+	defaultMetricsPeriod = 30 * time.Second
+)
 
 func init() {
 	// Adds logging specific flags: -v, -e and -d.
@@ -29,11 +48,39 @@ func init() {
 	debugSelectorsStr = flag.String("d", "", "Enable certain debug selectors")
 }
 
+func HandleFlags(name string) error {
+	level := _log.level
+	if *verbose {
+		if LOG_INFO > level {
+			level = LOG_INFO
+		}
+	}
+
+	selectors := strings.Split(*debugSelectorsStr, ",")
+	debugSelectors, debugAll := parseSelectors(selectors)
+	if debugAll || len(debugSelectors) > 0 {
+		level = LOG_DEBUG
+	}
+
+	// flags are handled before config file is read => log to stderr for now
+	_log.level = level
+	_log.toStderr = true
+	_log.logger = log.New(os.Stderr, name, stderrLogFlags)
+	_log.selectors = debugSelectors
+	_log.debugAllSelectors = debugAll
+
+	return nil
+}
+
 // Init combines the configuration from config with the command line
 // flags to initialize the Logging systems. After calling this function,
 // standard output is always enabled. You can make it respect the command
 // line flag with a later SetStderr call.
-func Init(name string, config *Logging) error {
+func Init(name string, start time.Time, config *Logging) error {
+	// reset settings from HandleFlags
+	_log = logger{
+		JSON: config.JSON,
+	}
 
 	logLevel, err := getLogLevel(config)
 	if err != nil {
@@ -57,29 +104,19 @@ func Init(name string, config *Logging) error {
 		logLevel = LOG_DEBUG
 	}
 
-	var defaultToFiles, defaultToSyslog bool
-	var defaultFilePath string
-	if runtime.GOOS == "windows" {
-		// always disabled on windows
-		defaultToSyslog = false
-		defaultToFiles = true
-		defaultFilePath = fmt.Sprintf("C:\\ProgramData\\%s\\Logs", name)
-	} else {
-		defaultToSyslog = true
-		defaultToFiles = false
-		defaultFilePath = fmt.Sprintf("/var/log/%s", name)
-	}
+	// default log location is in the logs path
+	defaultFilePath := paths.Resolve(paths.Logs, "")
 
 	var toSyslog, toFiles bool
 	if config.ToSyslog != nil {
 		toSyslog = *config.ToSyslog
 	} else {
-		toSyslog = defaultToSyslog
+		toSyslog = false
 	}
 	if config.ToFiles != nil {
 		toFiles = *config.ToFiles
 	} else {
-		toFiles = defaultToFiles
+		toFiles = true
 	}
 
 	// toStderr disables logging to syslog/files
@@ -87,6 +124,8 @@ func Init(name string, config *Logging) error {
 		toSyslog = false
 		toFiles = false
 	}
+
+	startTime = start
 
 	LogInit(Priority(logLevel), "", toSyslog, true, debugSelectors)
 	if len(debugSelectors) > 0 {
@@ -121,6 +160,11 @@ func Init(name string, config *Logging) error {
 		log.SetOutput(ioutil.Discard)
 	}
 
+	// Disable stderr logging if requested by cmdline flag
+	SetStderr()
+
+	go logMetrics(&config.Metrics)
+
 	return nil
 }
 
@@ -133,7 +177,7 @@ func SetStderr() {
 
 func getLogLevel(config *Logging) (Priority, error) {
 	if config == nil || config.Level == "" {
-		return LOG_ERR, nil
+		return LOG_INFO, nil
 	}
 
 	levels := map[string]Priority{
